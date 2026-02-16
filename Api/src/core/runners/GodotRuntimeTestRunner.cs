@@ -297,7 +297,7 @@ internal sealed class GodotRuntimeTestRunner : BaseTestRunner
         try
         {
             // recompile the project
-            var processStartInfo = new ProcessStartInfo($"{godotBinary}", @"--path . -e --headless --quit-after 100 --verbose")
+            var processStartInfo = new ProcessStartInfo($"{godotBinary}", @"--path . --headless --quit")
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
