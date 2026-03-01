@@ -79,6 +79,8 @@ public sealed class SignalAssert : AssertBase<GodotObject, ISignalConstraint>, I
 
     private Task<ISignalConstraint> BuildSignalTask(string signal, Variant[] args, Action<bool> validate)
     {
+        // CA2025: CTS lifecycle is managed via TaskCancellations dictionary and disposed in the cleanup continuation below.
+#pragma warning disable CA2025
         var signalCancellationToken = new CancellationTokenSource();
         var continuation = GodotSignalCollector.Instance.IsEmitted(signalCancellationToken, Current!, signal, args)
             .ContinueWith<ISignalConstraint>(
@@ -104,6 +106,7 @@ public sealed class SignalAssert : AssertBase<GodotObject, ISignalConstraint>, I
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
         return continuation;
+#pragma warning restore CA2025
     }
 
     private void ThrowTestFailureReport(string message, StackTrace stackTrace)
