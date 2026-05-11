@@ -296,8 +296,15 @@ internal sealed class GodotRuntimeTestRunner : BaseTestRunner
         using var compileProcess = new Process();
         try
         {
-            // recompile the project
-            var processStartInfo = new ProcessStartInfo($"{godotBinary}", @"--path . --headless --quit")
+            // Refresh Godot's project state so the .NET assembly we just rebuilt is
+            // picked up by the test runner. We use --import (which loads + imports
+            // resources and exits before the main loop runs) rather than --quit
+            // (which runs one main-loop iteration first). --quit hits a deadlock in
+            // projects that use the Wwise GDExtension: WwiseRuntimeManager.init()
+            // runs, AK::SoundEngine::RenderAudio() is called from the first
+            // _process, and its completion futex never fires (Wwise audio worker
+            // never signals back). --import dodges that path entirely.
+            var processStartInfo = new ProcessStartInfo($"{godotBinary}", @"--path . --headless --import")
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
