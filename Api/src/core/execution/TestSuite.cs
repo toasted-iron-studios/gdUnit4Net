@@ -9,6 +9,7 @@ using Api;
 
 internal sealed class TestSuite : IDisposable
 {
+    private readonly Lazy<object> instance;
     private readonly Lazy<IEnumerable<TestCase>> testCases;
 
     public TestSuite(TestSuiteNode suite)
@@ -21,14 +22,23 @@ internal sealed class TestSuite : IDisposable
 
     internal TestSuite(Type type, List<TestCaseNode> tests, string sourceFile)
     {
-        Instance = Activator.CreateInstance(type)
-                   ?? throw new InvalidOperationException($"Cannot create an instance of '{type.FullName}' because it does not have a public parameterless constructor.");
-
+        FixtureType = type;
+        instance = new Lazy<object>(() => CreateInstance(type));
         Name = type.Name;
         ResourcePath = sourceFile;
 
         // we do lazy loading to only load test case one times
         testCases = new Lazy<IEnumerable<TestCase>>(() => LoadTestCases(type, tests));
+    }
+
+    private TestSuite(TestSuite source, TestCase testCase)
+    {
+        FixtureType = source.FixtureType;
+        instance = new Lazy<object>(() => CreateInstance(FixtureType));
+        Name = source.Name;
+        ResourcePath = source.ResourcePath;
+        FilterDisabled = source.FilterDisabled;
+        testCases = new Lazy<IEnumerable<TestCase>>(() => [testCase]);
     }
 
     public int TestCaseCount => TestCases.Count();
@@ -39,17 +49,25 @@ internal sealed class TestSuite : IDisposable
 
     public string Name { get; set; }
 
-    public string? FullName => GetType().FullName;
+    public string? FullName => FixtureType.FullName;
 
-    public object Instance { get; set; }
+    public Type FixtureType { get; }
+
+    public object Instance => instance.Value;
 
     public bool FilterDisabled { get; set; }
 
+    public TestSuite CreateFixture(TestCase testCase) => new(this, testCase);
+
     public void Dispose()
     {
-        if (Instance is IDisposable disposable)
+        if (instance.IsValueCreated && Instance is IDisposable disposable)
             disposable.Dispose();
     }
+
+    private static object CreateInstance(Type type) =>
+        Activator.CreateInstance(type)
+        ?? throw new InvalidOperationException($"Cannot create an instance of '{type.FullName}' because it does not have a public parameterless constructor.");
 
     private static List<TestCase> LoadTestCases(Type type, List<TestCaseNode> includedTests)
         =>

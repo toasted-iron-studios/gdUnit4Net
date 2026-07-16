@@ -15,10 +15,10 @@ using static Api.ReportType;
 
 internal class AfterExecutionStage : ExecutionStage<AfterAttribute>
 {
-    public AfterExecutionStage(TestSuite testSuite)
-        : base("After", testSuite.Instance.GetType())
-    {
-    }
+    private readonly bool publishSuiteEvent;
+
+    public AfterExecutionStage(TestSuite testSuite, bool publishSuiteEvent = true)
+        : base("After", testSuite.FixtureType) => this.publishSuiteEvent = publishSuiteEvent;
 
     public override async Task Execute(ExecutionContext context)
     {
@@ -26,23 +26,23 @@ internal class AfterExecutionStage : ExecutionStage<AfterAttribute>
         await base
             .Execute(context)
             .ConfigureAwait(true);
-        Utils.ClearTempDir();
+        if (publishSuiteEvent)
+            Utils.ClearTempDir();
         await context.MemoryPool
             .Gc()
             .ConfigureAwait(true);
         if (context.MemoryPool.OrphanCount > 0)
             context.ReportCollector.PushFront(new TestReport(Warning, 0, ReportOrphans(context)));
-        context.FireAfterEvent();
+        if (publishSuiteEvent)
+            context.FireAfterEvent();
     }
 
-    private static AfterAttribute? AfterAttribute(ExecutionContext context) => context.TestSuite.Instance
-        .GetType()
+    private static AfterAttribute? AfterAttribute(ExecutionContext context) => context.TestSuite.FixtureType
         .GetMethods()
         .FirstOrDefault(m => m.IsDefined(typeof(AfterAttribute)))
         ?.GetCustomAttribute<AfterAttribute>();
 
-    private static BeforeAttribute? BeforeAttribute(ExecutionContext context) => context.TestSuite.Instance
-        .GetType()
+    private static BeforeAttribute? BeforeAttribute(ExecutionContext context) => context.TestSuite.FixtureType
         .GetMethods()
         .FirstOrDefault(m => m.IsDefined(typeof(BeforeAttribute)))
         ?.GetCustomAttribute<BeforeAttribute>();

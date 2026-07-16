@@ -9,7 +9,7 @@ using Godot;
 
 internal class MemoryPool
 {
-    private static readonly ThreadLocal<MemoryPool?> CurrentPool = new();
+    private static readonly AsyncLocal<MemoryPool?> CurrentPool = new();
     private readonly List<GodotObject> registeredObjects = [];
 
     public MemoryPool(bool reportOrphanNodesEnabled) => OrphanMonitor = reportOrphanNodesEnabled ? new OrphanNodesMonitor() : null;
@@ -36,9 +36,8 @@ internal class MemoryPool
 
     public async Task Gc()
     {
-        var currentPool = CurrentPool.Value;
-        currentPool?.registeredObjects.ForEach(FreeInstance);
-        currentPool?.registeredObjects.Clear();
+        registeredObjects.ForEach(FreeInstance);
+        registeredObjects.Clear();
         StopMonitoring();
         if (OrphanMonitor != null)
             _ = await GodotObjectExtensions.SyncProcessFrame;

@@ -7,72 +7,153 @@ using System.Diagnostics.CodeAnalysis;
 
 using Data;
 
-using Hooks;
-
 using Reporting;
+
+using Signals;
 
 using static Api.ReportType;
 
 internal sealed class TestSuiteExecutionStage : IExecutionStage
 {
-    public TestSuiteExecutionStage(TestSuite testSuite)
-    {
-        BeforeStage = new BeforeExecutionStage(testSuite);
-        AfterStage = new AfterExecutionStage(testSuite);
-        BeforeTestStage = new BeforeTestExecutionStage(testSuite);
-        AfterTestStage = new AfterTestExecutionStage(testSuite);
-    }
+    public TestSuiteExecutionStage(TestSuite testSuite) => TestSuite = testSuite;
 
-    private BeforeExecutionStage BeforeStage { get; }
-
-    private AfterExecutionStage AfterStage { get; }
-
-    private BeforeTestExecutionStage BeforeTestStage { get; }
-
-    private AfterTestExecutionStage AfterTestStage { get; }
+    private TestSuite TestSuite { get; }
 
     [SuppressMessage(
         "Reliability",
         "CA2000:Dispose objects before losing scope",
-        Justification = "testSuiteContext ownership is transferred to ExecutionContext which handles disposal")]
+        Justification = "Fixture contexts own and dispose their child execution contexts")]
     public async Task Execute(ExecutionContext testSuiteContext)
     {
-        await BeforeStage
-            .Execute(testSuiteContext)
-            .ConfigureAwait(true);
-        using (var stdoutHook = testSuiteContext.IsCaptureStdOut ? StdOutHookFactory.CreateStdOutHook() : null)
+        testSuiteContext.FireBeforeEvent();
+        try
         {
-            foreach (var testCase in testSuiteContext.TestSuite.TestCases)
+            if (TestSuite.FixtureType.IsDefined(typeof(SequentialAttribute), true))
             {
-                using var testCaseContext = new ExecutionContext(testSuiteContext, testCase);
-                if (testCase.HasDataPoint)
+                foreach (var testCase in TestSuite.TestCases)
                 {
-                    await RunTestCaseWithDataPoint(stdoutHook, testCaseContext, testCase)
+                    await ExecuteTestCase(testSuiteContext, testCase)
                         .ConfigureAwait(true);
-                }
-                else
-                {
-                    await RunTestCase(stdoutHook, testCaseContext, testCase, testCase.TestCaseAttribute, testCase.Arguments)
-                        .ConfigureAwait(true);
-                }
-
-                if (testCaseContext.IsFailed || testCaseContext.IsError)
-                {
-                    // break;
                 }
             }
+            else
+            {
+                var tasks = TestSuite.TestCases
+                    .Select(testCase => ScheduleTestCase(testSuiteContext, testCase))
+                    .ToArray();
+                await Task.WhenAll(tasks)
+                    .ConfigureAwait(true);
+            }
         }
+        finally
+        {
+            try
+            {
+                if (testSuiteContext.IsEngineMode)
+                    GodotSignalCollector.Instance.Clean();
+                Utils.ClearTempDir();
+            }
+            finally
+            {
+                testSuiteContext.FireAfterEvent();
+            }
+        }
+    }
 
-        await AfterStage
-            .Execute(testSuiteContext)
+    private static async Task RunTestCase(
+        BeforeTestExecutionStage beforeTestStage,
+        AfterTestExecutionStage afterTestStage,
+        ExecutionContext executionContext,
+        TestCase testCase,
+        TestCaseAttribute stageAttribute,
+        params object?[] methodArguments)
+    {
+        try
+        {
+            await beforeTestStage
+                .Execute(executionContext)
+                .ConfigureAwait(true);
+
+            if (!executionContext.IsSkipped)
+            {
+                using ExecutionContext context = new(executionContext, methodArguments);
+                await new TestCaseExecutionStage(context.TestCaseName, testCase, stageAttribute)
+                    .Execute(context)
+                    .ConfigureAwait(true);
+            }
+        }
+        finally
+        {
+            await afterTestStage
+                .Execute(executionContext)
+                .ConfigureAwait(true);
+        }
+    }
+
+    private async Task ExecuteTestCase(ExecutionContext testSuiteContext, TestCase testCase)
+    {
+        using var fixture = TestSuite.CreateFixture(testCase);
+        using var fixtureContext = testSuiteContext.CreateFixtureContext(fixture, testCase);
+        var beforeStage = new BeforeExecutionStage(fixture, false);
+        var afterStage = new AfterExecutionStage(fixture, false);
+        var beforeTestStage = new BeforeTestExecutionStage(fixture);
+        var afterTestStage = new AfterTestExecutionStage(fixture, testCase.HasDataPoint, false);
+
+        await beforeStage
+            .Execute(fixtureContext)
+            .ConfigureAwait(true);
+        var testCaseContext = new ExecutionContext(fixtureContext, testCase);
+        try
+        {
+            if (testCase.HasDataPoint)
+            {
+                await RunTestCaseWithDataPoint(beforeTestStage, afterTestStage, testCaseContext, testCase)
+                    .ConfigureAwait(true);
+            }
+            else
+            {
+                await RunTestCase(beforeTestStage, afterTestStage, testCaseContext, testCase, testCase.TestCaseAttribute, testCase.Arguments)
+                    .ConfigureAwait(true);
+            }
+        }
+        finally
+        {
+            testCaseContext.Dispose();
+            try
+            {
+                await afterStage
+                    .Execute(fixtureContext)
+                    .ConfigureAwait(true);
+            }
+            finally
+            {
+                if (!testCase.HasDataPoint)
+                    testCaseContext.FireAfterTestEvent();
+            }
+        }
+    }
+
+    private Task ScheduleTestCase(ExecutionContext testSuiteContext, TestCase testCase) =>
+        testSuiteContext.IsEngineMode
+            ? ExecuteTestCaseDeferred(testSuiteContext, testCase)
+            : Task.Run(() => ExecuteTestCase(testSuiteContext, testCase));
+
+    private async Task ExecuteTestCaseDeferred(ExecutionContext testSuiteContext, TestCase testCase)
+    {
+        await Task.Yield();
+        await ExecuteTestCase(testSuiteContext, testCase)
             .ConfigureAwait(true);
     }
 
     [SuppressMessage(
         "Reliability",
         "CA2000:Dispose objects before losing scope",
-        Justification = "testSuiteContext ownership is transferred to ExecutionContext which handles disposal")]
-    private async Task RunTestCaseWithDataPoint(IStdOutHook? stdoutHook, ExecutionContext executionContext, TestCase testCase)
+        Justification = "Child execution contexts are disposed in the scope that creates them")]
+    private async Task RunTestCaseWithDataPoint(
+        BeforeTestExecutionStage beforeTestStage,
+        AfterTestExecutionStage afterTestStage,
+        ExecutionContext executionContext,
+        TestCase testCase)
     {
         executionContext.FireBeforeTestEvent();
 
@@ -88,7 +169,7 @@ internal sealed class TestSuiteExecutionStage : IExecutionStage
                     {
                         var displayName = TestCase.BuildDisplayName(testCase.Name, new TestCaseAttribute(dataPointValues));
                         using ExecutionContext testCaseContext = new(executionContext, displayName);
-                        await RunTestCase(stdoutHook, testCaseContext, testCase, testAttribute, dataPointValues)
+                        await RunTestCase(beforeTestStage, afterTestStage, testCaseContext, testCase, testAttribute, dataPointValues)
                             .ConfigureAwait(true);
                     }
                 }
@@ -111,7 +192,7 @@ internal sealed class TestSuiteExecutionStage : IExecutionStage
                 {
                     var displayName = TestCase.BuildDisplayName(testCase.Name, new TestCaseAttribute(dataPointValues));
                     using ExecutionContext testCaseContext = new(executionContext, displayName);
-                    await RunTestCase(stdoutHook, testCaseContext, testCase, testAttribute, dataPointValues)
+                    await RunTestCase(beforeTestStage, afterTestStage, testCaseContext, testCase, testAttribute, dataPointValues)
                         .ConfigureAwait(true);
                 }
             }
@@ -124,52 +205,5 @@ internal sealed class TestSuiteExecutionStage : IExecutionStage
         }
 
         executionContext.FireAfterTestEvent();
-    }
-
-    private async Task RunTestCase(
-        IStdOutHook? stdoutHook,
-        ExecutionContext executionContext,
-        TestCase testCase,
-        TestCaseAttribute stageAttribute,
-        params object?[] methodArguments)
-    {
-        try
-        {
-            // start capturing stdout if enabled
-            stdoutHook?.StartCapture();
-
-            await BeforeTestStage
-                .Execute(executionContext)
-                .ConfigureAwait(true);
-
-            if (!executionContext.IsSkipped)
-            {
-                using ExecutionContext context = new(executionContext, methodArguments);
-                await new TestCaseExecutionStage(context.TestCaseName, testCase, stageAttribute)
-                    .Execute(context)
-                    .ConfigureAwait(true);
-            }
-        }
-        finally
-        {
-            // stop capturing stdout and add as report if enabled
-            stdoutHook?.StopCapture();
-            var stdoutMessage = stdoutHook?.GetCapturedOutput();
-            if (!string.IsNullOrEmpty(stdoutMessage))
-            {
-                executionContext.ReportCollector.PushFront(
-                    new TestReport(
-                        Stdout,
-                        executionContext.CurrentTestCase?.Line ?? 0,
-                        stdoutMessage));
-
-                // and finally redirect to the console because it was fully captured
-                Console.WriteLine(stdoutMessage);
-            }
-
-            await AfterTestStage
-                .Execute(executionContext)
-                .ConfigureAwait(true);
-        }
     }
 }

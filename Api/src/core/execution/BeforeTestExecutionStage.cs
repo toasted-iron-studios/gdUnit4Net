@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 internal class BeforeTestExecutionStage : ExecutionStage<BeforeTestAttribute>
 {
     public BeforeTestExecutionStage(TestSuite testSuite)
-        : base("BeforeTest", testSuite.Instance.GetType())
+        : base("BeforeTest", testSuite.FixtureType)
     {
     }
 

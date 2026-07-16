@@ -18,11 +18,14 @@ using Reporting;
 
 internal sealed class ExecutionContext : IDisposable
 {
+    private static readonly AsyncLocal<ExecutionContext?> CurrentContext = new();
+    private readonly ExecutionContext? previousContext;
     private int iteration;
 
     public ExecutionContext(TestSuite testInstance, IEnumerable<ITestEventListener> eventListeners, bool reportOrphanNodesEnabled, bool isEngineMode)
     {
-        Thread.SetData(Thread.GetNamedDataSlot("ExecutionContext"), this);
+        previousContext = CurrentContext.Value;
+        CurrentContext.Value = this;
         MemoryPool = new MemoryPool(reportOrphanNodesEnabled && isEngineMode);
         Stopwatch = new Stopwatch();
         Stopwatch.Start();
@@ -34,7 +37,7 @@ internal sealed class ExecutionContext : IDisposable
         ReportCollector = new TestReportCollector();
         SubExecutionContexts = [];
         Disposables = [];
-        FullyQualifiedName = TestSuite.Instance.GetType().FullName!;
+        FullyQualifiedName = TestSuite.FixtureType.FullName!;
         IsEngineMode = isEngineMode;
     }
 
@@ -54,7 +57,7 @@ internal sealed class ExecutionContext : IDisposable
         CurrentIteration = CurrentTestCase?.TestCaseAttributes.Count == 1
             ? CurrentTestCase?.TestCaseAttributes.ElementAt(0).Iterations ?? 0
             : 0;
-        FullyQualifiedName = TestCase.BuildFullyQualifiedName(TestSuite.Instance.GetType().FullName!, TestCaseName, new TestCaseAttribute(methodArguments));
+        FullyQualifiedName = TestCase.BuildFullyQualifiedName(TestSuite.FixtureType.FullName!, TestCaseName, new TestCaseAttribute(methodArguments));
     }
 
     // used for dynamic datapoint tests
@@ -73,13 +76,14 @@ internal sealed class ExecutionContext : IDisposable
             ? CurrentTestCase?.TestCaseAttributes.ElementAt(0).Iterations ?? 0
             : 0;
         TestCaseName = context.TestCaseName;
-        FullyQualifiedName = TestCase.BuildFullyQualifiedName(TestSuite.Instance.GetType().FullName!, displayName, new TestCaseAttribute());
+        FullyQualifiedName = TestCase.BuildFullyQualifiedName(TestSuite.FixtureType.FullName!, displayName, new TestCaseAttribute());
         DisplayName = displayName;
     }
 
     public ExecutionContext(ExecutionContext context, TestCase testCase)
         : this(context.TestSuite, context.EventListeners, context.ReportOrphanNodesEnabled, context.IsEngineMode)
     {
+        ReportCollector = context.ReportCollector;
         context.SubExecutionContexts.Add(this);
         CurrentTestCase = testCase;
         CurrentIteration = CurrentTestCase?.TestCaseAttributes.Count == 1
@@ -87,11 +91,10 @@ internal sealed class ExecutionContext : IDisposable
             : 0;
         IsSkipped = CurrentTestCase?.IsSkipped ?? false;
         TestCaseName = TestCase.BuildDisplayName(testCase.Name, testCase.TestCaseAttribute);
-        FullyQualifiedName = TestCase.BuildFullyQualifiedName(TestSuite.Instance.GetType().FullName!, testCase.Name, testCase.TestCaseAttribute);
+        FullyQualifiedName = TestCase.BuildFullyQualifiedName(TestSuite.FixtureType.FullName!, testCase.Name, testCase.TestCaseAttribute);
     }
 
-    public static ExecutionContext? Current
-        => Thread.GetData(Thread.GetNamedDataSlot("ExecutionContext")) as ExecutionContext;
+    public static ExecutionContext? Current => CurrentContext.Value;
 
     public bool IsEngineMode { get; set; }
 
@@ -147,7 +150,7 @@ internal sealed class ExecutionContext : IDisposable
 
     private int ErrorCount => ReportCollector.Errors.Count();
 
-    private string FullyQualifiedName { get; }
+    private string FullyQualifiedName { get; set; }
 
     private string? DisplayName { get; }
 
@@ -168,6 +171,21 @@ internal sealed class ExecutionContext : IDisposable
             }
         });
         Stopwatch.Stop();
+        if (ReferenceEquals(CurrentContext.Value, this))
+            CurrentContext.Value = previousContext;
+    }
+
+    public ExecutionContext CreateFixtureContext(TestSuite fixture, TestCase testCase)
+    {
+        // Godot's orphan count is process-global, so concurrent fixtures cannot attribute its deltas safely.
+        var context = new ExecutionContext(fixture, EventListeners, false, IsEngineMode)
+        {
+            CurrentTestCase = testCase,
+            TestCaseName = TestCase.BuildDisplayName(testCase.Name, testCase.TestCaseAttribute),
+            IsCaptureStdOut = false,
+            FullyQualifiedName = TestCase.BuildFullyQualifiedName(fixture.FixtureType.FullName!, testCase.Name, testCase.TestCaseAttribute)
+        };
+        return context;
     }
 
     public bool IsExpectingToFailWithException(Exception? exception, MethodInfo? mi)
@@ -235,5 +253,9 @@ internal sealed class ExecutionContext : IDisposable
             Duration);
 
     private void FireTestEvent(TestEvent e) =>
-        EventListeners.ToList().ForEach(l => l.PublishEvent(e));
+        EventListeners.ToList().ForEach(listener =>
+        {
+            lock (listener)
+                listener.PublishEvent(e);
+        });
 }

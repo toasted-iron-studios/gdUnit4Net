@@ -7,10 +7,10 @@ using System.Threading.Tasks;
 
 internal class BeforeExecutionStage : ExecutionStage<BeforeAttribute>
 {
-    public BeforeExecutionStage(TestSuite testSuite)
-        : base("Before", testSuite.Instance.GetType())
-    {
-    }
+    private readonly bool publishSuiteEvent;
+
+    public BeforeExecutionStage(TestSuite testSuite, bool publishSuiteEvent = true)
+        : base("Before", testSuite.FixtureType) => this.publishSuiteEvent = publishSuiteEvent;
 
     public override async Task Execute(ExecutionContext context)
     {
@@ -18,8 +18,12 @@ internal class BeforeExecutionStage : ExecutionStage<BeforeAttribute>
         await base
             .Execute(context)
             .ConfigureAwait(true);
-        context.FireBeforeEvent();
-        context.ReportCollector.Clear();
+        if (publishSuiteEvent)
+        {
+            context.FireBeforeEvent();
+            context.ReportCollector.Clear();
+        }
+
         context.MemoryPool.StopMonitoring();
     }
 }

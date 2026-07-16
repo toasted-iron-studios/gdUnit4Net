@@ -17,16 +17,21 @@ using static Api.ReportType;
 
 internal class AfterTestExecutionStage : ExecutionStage<AfterTestAttribute>
 {
-    public AfterTestExecutionStage(TestSuite testSuite)
-        : base("AfterTest", testSuite.Instance.GetType())
+    private readonly bool cleanGodotSignals;
+    private readonly bool publishTestEvent;
+
+    public AfterTestExecutionStage(TestSuite testSuite, bool publishTestEvent = true, bool cleanGodotSignals = true)
+        : base("AfterTest", testSuite.FixtureType)
     {
+        this.publishTestEvent = publishTestEvent;
+        this.cleanGodotSignals = cleanGodotSignals;
     }
 
     public override async Task Execute(ExecutionContext context)
     {
         if (!context.IsSkipped)
         {
-            if (context.IsEngineMode)
+            if (context.IsEngineMode && cleanGodotSignals)
                 GodotSignalCollector.Instance.Clean();
             context.MemoryPool.SetActive(StageName);
             await base
@@ -39,17 +44,16 @@ internal class AfterTestExecutionStage : ExecutionStage<AfterTestAttribute>
                 context.ReportCollector.PushFront(new TestReport(Warning, 0, ReportOrphans(context)));
         }
 
-        context.FireAfterTestEvent();
+        if (publishTestEvent)
+            context.FireAfterTestEvent();
     }
 
-    private static AfterTestAttribute? AfterTestAttribute(ExecutionContext context) => context.TestSuite.Instance
-        .GetType()
+    private static AfterTestAttribute? AfterTestAttribute(ExecutionContext context) => context.TestSuite.FixtureType
         .GetMethods()
         .FirstOrDefault(m => m.IsDefined(typeof(AfterTestAttribute)))
         ?.GetCustomAttribute<AfterTestAttribute>();
 
-    private static BeforeTestAttribute? BeforeTestAttribute(ExecutionContext context) => context.TestSuite.Instance
-        .GetType()
+    private static BeforeTestAttribute? BeforeTestAttribute(ExecutionContext context) => context.TestSuite.FixtureType
         .GetMethods()
         .FirstOrDefault(m => m.IsDefined(typeof(BeforeTestAttribute)))
         ?.GetCustomAttribute<BeforeTestAttribute>();
