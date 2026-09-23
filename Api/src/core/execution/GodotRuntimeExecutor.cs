@@ -30,7 +30,12 @@ using static Api.ReportType;
 internal sealed class GodotRuntimeExecutor : InOutPipeProxy<NamedPipeClientStream>, ICommandExecutor
 {
     public GodotRuntimeExecutor(ITestEngineLogger logger)
-        : base(new NamedPipeClientStream(".", PIPE_NAME, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Impersonation), logger)
+        : this(logger, PIPE_NAME)
+    {
+    }
+
+    internal GodotRuntimeExecutor(ITestEngineLogger logger, string pipeName)
+        : base(new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous, TokenImpersonationLevel.Impersonation), logger)
     {
     }
 
@@ -97,8 +102,21 @@ internal sealed class GodotRuntimeExecutor : InOutPipeProxy<NamedPipeClientStrea
             };
         }
 
-        // read incoming data until is command response or canceled
-        TestEvent? lastTestEvent = null;
+        var activeTests = new Dictionary<Guid, TestEvent>();
+
+        Response InterruptedResponse(string message)
+        {
+            foreach (var testEvent in activeTests.Values)
+            {
+                testEventListener.PublishEvent(TestEvent
+                    .AfterTest(testEvent.Id, testEvent.ResourcePath, testEvent.SuiteName, testEvent.TestName)
+                    .WithStatistic(TestEvent.StatisticKey.Errors, 1)
+                    .WithReport(new TestReport(Interrupted, 0, message)));
+            }
+
+            return new Response { StatusCode = HttpStatusCode.Gone, Payload = message };
+        }
+
         while (!cancellationToken.IsCancellationRequested)
         {
             try
@@ -108,24 +126,27 @@ internal sealed class GodotRuntimeExecutor : InOutPipeProxy<NamedPipeClientStrea
                 switch (data)
                 {
                     case TestEvent testEvent:
-                        // save last event to be used for test cancellation report
-                        lastTestEvent = testEvent;
+                        if (testEvent.Type == EventType.TestBefore)
+                            activeTests[testEvent.Id] = testEvent;
+                        else if (testEvent.Type == EventType.TestAfter)
+                            _ = activeTests.Remove(testEvent.Id);
                         testEventListener.PublishEvent(testEvent);
                         break;
                     case Response response:
-                        if (response.StatusCode != HttpStatusCode.Gone || lastTestEvent == null)
-                            return response;
-
-                        // if connection gone we report at interrupted to the actual test
-                        var testCanceledEvent = TestEvent
-                            .AfterTest(lastTestEvent.Id, lastTestEvent.ResourcePath, lastTestEvent.SuiteName, lastTestEvent.TestName)
-                            .WithStatistic(TestEvent.StatisticKey.Errors, 1)
-                            .WithReport(new TestReport(Interrupted, 0, response.Payload));
-                        testEventListener.PublishEvent(testCanceledEvent);
-                        return response;
+                        return response.StatusCode == HttpStatusCode.Gone
+                            ? InterruptedResponse(response.Payload)
+                            : response;
                     default:
                         continue;
                 }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return InterruptedResponse("Connection interrupted by cancellation requested.");
+            }
+            catch (IOException ex)
+            {
+                return InterruptedResponse($"Test engine connection ended before the command completed: {ex.Message}");
             }
 #pragma warning disable CA1031
             catch (Exception ex)
@@ -139,11 +160,7 @@ internal sealed class GodotRuntimeExecutor : InOutPipeProxy<NamedPipeClientStrea
             }
         }
 
-        return new Response
-        {
-            StatusCode = HttpStatusCode.InternalServerError,
-            Payload = string.Empty,
-        };
+        return InterruptedResponse("Connection interrupted by cancellation requested.");
     }
 }
 

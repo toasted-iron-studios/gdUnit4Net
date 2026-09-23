@@ -66,6 +66,8 @@ internal class InOutPipeProxy<TPipe> : IAsyncDisposable
         }
 
         var responseLength = BinaryPrimitives.ReadInt32LittleEndian(responseLengthBytes);
+        if (responseLength <= 0)
+            throw new InvalidDataException($"Invalid pipe frame length: {responseLength}.");
         var responseBytes = new byte[responseLength];
         await ReadExactBytesAsync(responseBytes, 0, responseLength, cancellationToken)
             .ConfigureAwait(false);
@@ -96,6 +98,8 @@ internal class InOutPipeProxy<TPipe> : IAsyncDisposable
         await ReadExactBytesAsync(responseLengthBytes, 0, 4, cancellationToken)
             .ConfigureAwait(false);
         var responseLength = BinaryPrimitives.ReadInt32LittleEndian(responseLengthBytes);
+        if (responseLength <= 0)
+            throw new InvalidDataException($"Invalid pipe frame length: {responseLength}.");
 
         if (!IsConnected)
             throw new IOException("Client not connected");
@@ -157,25 +161,6 @@ internal class InOutPipeProxy<TPipe> : IAsyncDisposable
            throw new JsonSerializationException($"Failed to deserialize command payload:'{json}'");
 
     private async Task ReadExactBytesAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-    {
-        var totalBytesRead = 0;
-        while (IsConnected && totalBytesRead < count)
-        {
-            try
-            {
-                var bytesRead = await Pipe
-                    .ReadAsync(buffer.AsMemory(offset + totalBytesRead, count - totalBytesRead), cancellationToken)
-                    .ConfigureAwait(false);
-                totalBytesRead += bytesRead;
-            }
-            catch (OperationCanceledException)
-            {
-                if (!cancellationToken.IsCancellationRequested)
-                    throw;
-                break;
-            }
-        }
-
-        // Console.WriteLine($"{typeof(TPipe)} Read {count} bytes from {totalBytesRead} of {count}, {IsConnected}");
-    }
+        => await Pipe.ReadExactlyAsync(buffer.AsMemory(offset, count), cancellationToken)
+            .ConfigureAwait(false);
 }

@@ -150,23 +150,28 @@ internal sealed class GodotRuntimeTestRunner : BaseTestRunner
                     _ = DebuggerFramework.AttachDebuggerToProcess(process);
             }
 
-            base.RunAndWait(testSuiteNodes, eventListener, cancellationToken);
-
-            _ = process.WaitForExit(2000);
-
-            // wait until the process has finished
-            var waitRetry = 0;
-            while (!process.HasExited && waitRetry++ < 10)
-                Thread.Sleep(100);
-
-            // If the process not finished until 10 retries, we kill it manually
-            if (!process.HasExited)
+            try
             {
-                Logger.LogInfo("GdUnit4 Godot Runtime Test Runner is not terminated, force process kill.");
-                process.Kill(true);
+                base.RunAndWait(testSuiteNodes, eventListener, cancellationToken);
             }
+            finally
+            {
+                _ = process.WaitForExit(2000);
 
-            CloseProcess(process);
+                // wait until the process has finished
+                var waitRetry = 0;
+                while (!process.HasExited && waitRetry++ < 10)
+                    Thread.Sleep(100);
+
+                // If the process not finished until 10 retries, we kill it manually
+                if (!process.HasExited)
+                {
+                    Logger.LogInfo("GdUnit4 Godot Runtime Test Runner is not terminated, force process kill.");
+                    process.Kill(true);
+                }
+
+                CloseProcess(process);
+            }
         }
     }
 
