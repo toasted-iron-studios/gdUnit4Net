@@ -175,13 +175,13 @@ internal sealed class GodotRuntimeTestRunner : BaseTestRunner
         }
     }
 
-    internal bool VerifyGodotCSharpSupport(string godotBinary)
+    internal bool VerifyGodotCSharpSupport(string godotBinary, string arguments = "--help")
     {
         using var godotProcess = new Process();
         try
         {
             // recompile the project
-            var processStartInfo = new ProcessStartInfo($"{godotBinary}", "--help")
+            var processStartInfo = new ProcessStartInfo(godotBinary, arguments)
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = false,
@@ -192,14 +192,11 @@ internal sealed class GodotRuntimeTestRunner : BaseTestRunner
                 WorkingDirectory = Environment.CurrentDirectory
             };
 
-            var outputComplete = new ManualResetEventSlim(false);
             var hasCSharpOptions = false;
             godotProcess.StartInfo = processStartInfo;
             godotProcess.EnableRaisingEvents = true;
             godotProcess.OutputDataReceived += (_, args) =>
             {
-                if (args.Data == null)
-                    outputComplete.Set();
                 var message = args.Data?.Trim();
                 if (!string.IsNullOrEmpty(message))
                     hasCSharpOptions = hasCSharpOptions || message.Contains("--build-solutions", StringComparison.OrdinalIgnoreCase);
@@ -212,8 +209,16 @@ internal sealed class GodotRuntimeTestRunner : BaseTestRunner
             }
 
             godotProcess.BeginOutputReadLine();
-            _ = godotProcess.WaitForExit(500);
-            _ = outputComplete.Wait(2000);
+            if (!godotProcess.WaitForExit(2500))
+            {
+                Logger.LogError("Checking Godot C# support timed out before process exit.");
+                godotProcess.Kill(true);
+                godotProcess.WaitForExit();
+                return false;
+            }
+
+            // Drain asynchronous output callbacks after the process has exited.
+            godotProcess.WaitForExit();
 
             if (!hasCSharpOptions)
             {
