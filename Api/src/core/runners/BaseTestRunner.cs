@@ -66,7 +66,9 @@ internal class BaseTestRunner : ITestRunner
             RunnerCancellationToken = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         var token = RunnerCancellationToken.Token;
-        Task.Run(
+        try
+        {
+            Task.Run(
                 async () =>
                 {
                     try
@@ -90,37 +92,41 @@ internal class BaseTestRunner : ITestRunner
                     catch (TimeoutException)
                     {
                         Logger.LogError("Failed to connect: Connection timeout");
+                        throw;
                     }
                     catch (OperationCanceledException)
                     {
                         Logger.LogInfo("Running tests are cancelled.");
+                        throw;
                     }
 #pragma warning disable CA1031
                     catch (Exception ex)
 #pragma warning restore CA1031
                     {
                         Logger.LogError($"{ex.Message}\n{ex.StackTrace}");
+                        throw;
                     }
                 },
                 token)
-            .ContinueWith(
-                _ =>
-                {
-                    lock (SyncLock)
-                    {
-                        RunnerCancellationToken?.Dispose();
-                        RunnerCancellationToken = null;
-                    }
-                },
-                TaskScheduler.Default)
-            .Wait(token);
+                .WaitAsync(token).GetAwaiter().GetResult();
+        }
+        finally
+        {
+            lock (SyncLock)
+            {
+                RunnerCancellationToken?.Dispose();
+                RunnerCancellationToken = null;
+            }
+        }
     }
 
     private static void ValidateResponse(Response response)
     {
-        if (response.StatusCode != HttpStatusCode.InternalServerError)
+        if (response.StatusCode == HttpStatusCode.OK)
             return;
-        var exception = JsonConvert.DeserializeObject<Exception>(response.Payload);
-        throw new InvalidOperationException("The server returned an unexpected status code.", exception);
+        var exception = response.StatusCode == HttpStatusCode.InternalServerError && response.Payload.Length > 0
+            ? JsonConvert.DeserializeObject<Exception>(response.Payload)
+            : null;
+        throw new InvalidOperationException($"Test engine command failed ({response.StatusCode}): {response.Payload}", exception);
     }
 }
